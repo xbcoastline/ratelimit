@@ -8,9 +8,9 @@ import (
 
 type RateLimiterInterface interface {
 	doGetRate() float64
-	doSetRate(permitsPerSecond float64, nowMicros int64)
-	queryEarliestAvailable(nowMicros int64) int64
-	reserveEarliestAvailable(permits int, nowMicros int64) int64
+	doSetRate(permitsPerSecond float64, nowTime time.Duration)
+	queryEarliestAvailable(nowTime time.Duration) time.Duration
+	reserveEarliestAvailable(permits int, nowTime time.Duration) time.Duration
 }
 
 type RateLimiterBase struct {
@@ -33,7 +33,7 @@ func (ratelimiter *RateLimiterBase) SetRate(permitsPerSecond float64) error {
 	}
 	ratelimiter.mutex.Lock()
 	defer ratelimiter.mutex.Unlock()
-	ratelimiter.doSetRate(permitsPerSecond, ratelimiter.stopwatch.ReadMicros())
+	ratelimiter.doSetRate(permitsPerSecond, ratelimiter.stopwatch.Elapsed())
 	return nil
 }
 
@@ -43,18 +43,22 @@ func (ratelimiter *RateLimiterBase) GetRate() float64 {
 	return ratelimiter.doGetRate()
 }
 
-func (ratelimiter *RateLimiterBase) reserve(permits int) (int64, error) {
+func (ratelimiter *RateLimiterBase) reserve(permits int) (time.Duration, error) {
 	if err := ratelimiter.checkPermits(permits); err != nil {
 		return -1, err
 	}
 	ratelimiter.mutex.Lock()
 	defer ratelimiter.mutex.Unlock()
-	return ratelimiter.reserveAndGetWaitLength(permits, ratelimiter.stopwatch.ReadMicros()), nil
+	return ratelimiter.reserveAndGetWaitLength(permits, ratelimiter.stopwatch.Elapsed()), nil
 }
 
-func (ratelimiter *RateLimiterBase) reserveAndGetWaitLength(permits int, nowMicros int64) int64 {
-	momentAvailable := ratelimiter.reserveEarliestAvailable(permits, nowMicros)
-	return maxInt64(momentAvailable-nowMicros, 0)
+func (ratelimiter *RateLimiterBase) reserveAndGetWaitLength(permits int, nowTime time.Duration) time.Duration {
+	momentAvailable := ratelimiter.reserveEarliestAvailable(permits, nowTime)
+	if momentAvailable > nowTime {
+		return momentAvailable - nowTime
+	} else {
+		return 0
+	}
 }
 
 func (ratelimiter *RateLimiterBase) checkPermits(permits int) error {
@@ -62,33 +66,32 @@ func (ratelimiter *RateLimiterBase) checkPermits(permits int) error {
 }
 
 func (ratelimiter *RateLimiterBase) Acquire(permits int) (float64, error) {
-	microsToWait, err := ratelimiter.reserve(permits)
+	timeToWait, err := ratelimiter.reserve(permits)
 	if err != nil {
 		return -1, err
 	}
-	ratelimiter.stopwatch.SleepMicrosUninterruptibly(microsToWait)
-	return float64(microsToWait*time.Microsecond.Nanoseconds()) / float64(time.Second), nil
+	ratelimiter.stopwatch.ticker.sleep(timeToWait)
+	return float64(timeToWait) / float64(time.Second), nil
 }
 
-func (ratelimiter *RateLimiterBase) canAcquire(nowMicros int64, timeoutMicros int64) bool {
-	return (ratelimiter.queryEarliestAvailable(nowMicros) - timeoutMicros) <= nowMicros
+func (ratelimiter *RateLimiterBase) canAcquire(nowTime time.Duration, timeout time.Duration) bool {
+	return (ratelimiter.queryEarliestAvailable(nowTime) - timeout) <= nowTime
 }
 
 func (ratelimiter *RateLimiterBase) TryAcquire(permits int, timeout time.Duration) (bool, error) {
-	timeoutMicros := maxInt64(timeout.Nanoseconds()/time.Microsecond.Nanoseconds(), 0)
 	if err := ratelimiter.checkPermits(permits); err != nil {
 		return false, err
 	}
-	var microsToWait int64
+	var timeToWait time.Duration
 	ratelimiter.mutex.Lock()
 	defer ratelimiter.mutex.Unlock()
 
-	nowMicros := ratelimiter.stopwatch.ReadMicros()
-	if !ratelimiter.canAcquire(nowMicros, timeoutMicros) {
+	nowMicros := ratelimiter.stopwatch.Elapsed()
+	if !ratelimiter.canAcquire(nowMicros, timeout) {
 		return false, nil
 	} else {
-		microsToWait = ratelimiter.reserveAndGetWaitLength(permits, nowMicros)
+		timeToWait = ratelimiter.reserveAndGetWaitLength(permits, nowMicros)
 	}
-	ratelimiter.stopwatch.SleepMicrosUninterruptibly(microsToWait)
+	ratelimiter.stopwatch.ticker.sleep(timeToWait)
 	return true, nil
 }
