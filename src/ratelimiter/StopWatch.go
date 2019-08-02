@@ -73,21 +73,11 @@ func (watch *Stopwatch) Elapsed() time.Duration {
 	return watch.getElapsedTime()
 }
 
-func NewUnstartedSystemWatch() *Stopwatch {
+func NewSystemWatch() *Stopwatch {
 	return &Stopwatch{
 		ticker:      &SystemTicker{},
 		isRunning:   false,
 		elapsedTime: 0,
 		startTime:   0,
 	}
-}
-
-func NewStartedSystemWatch() (*Stopwatch, error) {
-	stopwatch := Stopwatch{
-		ticker:      &SystemTicker{},
-		isRunning:   false,
-		elapsedTime: 0,
-		startTime:   0,
-	}
-	return &stopwatch, stopwatch.Start()
 }

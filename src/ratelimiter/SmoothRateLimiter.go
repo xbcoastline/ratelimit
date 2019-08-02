@@ -8,20 +8,6 @@ import (
 	"time"
 )
 
-type SleepingStopwatch struct {
-	Stopwatch
-}
-
-func NewSleepingStopwatch() (*SleepingStopwatch, error) {
-	watch, err := NewStartedSystemWatch()
-	if err != nil {
-		return nil, err
-	}
-	return &SleepingStopwatch{
-		Stopwatch: *watch,
-	}, nil
-}
-
 type SmoothWarmingUp struct {
 	warmupPeriodTime time.Duration
 	slope            float64
@@ -33,7 +19,7 @@ type SmoothWarmingUp struct {
 	stableIntervalTime time.Duration
 	nextFreeTicketTime time.Duration
 
-	*RateLimiterBase
+	*BaseLimiter
 }
 
 func checkArgument(b bool, errorMessageTemplate string) error {
@@ -49,18 +35,17 @@ func NewSmoothWarmingUp(permitsPerSecond float64, warmupPeriod time.Duration, co
 	if err := checkArgument(warmupPeriod >= 0, fmt.Sprintf("warmupPeriod must not be negative: %d", warmupPeriod)); err != nil {
 		return nil, err
 	}
-	stopwatch, err := NewSleepingStopwatch()
-	if err != nil {
-		return nil, err
-	}
 	ratelimiter := SmoothWarmingUp{
 		warmupPeriodTime:   warmupPeriod,
 		coldFactor:         coldFactor,
 		nextFreeTicketTime: 0,
 	}
-	ratelimiter.RateLimiterBase = &RateLimiterBase{
-		stopwatch:            stopwatch,
-		RateLimiterInterface: &ratelimiter,
+	ratelimiter.BaseLimiter = &BaseLimiter{
+		stopwatch:        NewSystemWatch(),
+		LimiterInterface: &ratelimiter,
+	}
+	if err := ratelimiter.stopwatch.Start(); err != nil {
+		return nil, err
 	}
 	if err := ratelimiter.SetRate(permitsPerSecond); err != nil {
 		return nil, err
@@ -69,67 +54,68 @@ func NewSmoothWarmingUp(permitsPerSecond float64, warmupPeriod time.Duration, co
 	return &ratelimiter, nil
 }
 
-func (ratelimiter *SmoothWarmingUp) queryEarliestAvailable(nowTime time.Duration) time.Duration {
-	return ratelimiter.nextFreeTicketTime
-}
-func (ratelimiter *SmoothWarmingUp) doGetRate() float64 {
-	return float64(time.Second) / float64(ratelimiter.stableIntervalTime)
+func (limiter *SmoothWarmingUp) queryEarliestAvailable(nowTime time.Duration) time.Duration {
+	return limiter.nextFreeTicketTime
 }
 
-func (ratelimiter *SmoothWarmingUp) resync(nowTime time.Duration) {
+func (limiter *SmoothWarmingUp) doGetRate() float64 {
+	return float64(time.Second) / float64(limiter.stableIntervalTime)
+}
+
+func (limiter *SmoothWarmingUp) resync(nowTime time.Duration) {
 	// if nextFreeTicket is in the past, resync to now
-	if nowTime > ratelimiter.nextFreeTicketTime {
-		newPermits := float64(nowTime-ratelimiter.nextFreeTicketTime) / ratelimiter.coolDownIntervalTime()
-		ratelimiter.storedPermits = math.Min(ratelimiter.maxPermits, ratelimiter.storedPermits+newPermits)
-		ratelimiter.nextFreeTicketTime = nowTime
+	if nowTime > limiter.nextFreeTicketTime {
+		newPermits := float64(nowTime-limiter.nextFreeTicketTime) / limiter.coolDownIntervalTime()
+		limiter.storedPermits = math.Min(limiter.maxPermits, limiter.storedPermits+newPermits)
+		limiter.nextFreeTicketTime = nowTime
 	}
 }
 
-func (ratelimiter *SmoothWarmingUp) doSetRate(permitsPerSecond float64, nowTime time.Duration) {
-	ratelimiter.resync(nowTime)
+func (limiter *SmoothWarmingUp) doSetRate(permitsPerSecond float64, nowTime time.Duration) {
+	limiter.resync(nowTime)
 	stableIntervalTime := time.Duration(float64(time.Second) / permitsPerSecond)
-	ratelimiter.stableIntervalTime = stableIntervalTime
+	limiter.stableIntervalTime = stableIntervalTime
 
-	oldMaxPermits := ratelimiter.maxPermits
-	coldIntervalTime := float64(stableIntervalTime) * ratelimiter.coldFactor
-	ratelimiter.thresholdPermits = 0.5 * float64(ratelimiter.warmupPeriodTime) / float64(stableIntervalTime)
-	ratelimiter.maxPermits =
-		ratelimiter.thresholdPermits + 2.0*float64(ratelimiter.warmupPeriodTime)/(float64(stableIntervalTime)+coldIntervalTime)
-	ratelimiter.slope = (coldIntervalTime - float64(stableIntervalTime)) / (ratelimiter.maxPermits - ratelimiter.thresholdPermits)
+	oldMaxPermits := limiter.maxPermits
+	coldIntervalTime := float64(stableIntervalTime) * limiter.coldFactor
+	limiter.thresholdPermits = 0.5 * float64(limiter.warmupPeriodTime) / float64(stableIntervalTime)
+	limiter.maxPermits =
+		limiter.thresholdPermits + 2.0*float64(limiter.warmupPeriodTime)/(float64(stableIntervalTime)+coldIntervalTime)
+	limiter.slope = (coldIntervalTime - float64(stableIntervalTime)) / (limiter.maxPermits - limiter.thresholdPermits)
 	if math.IsInf(oldMaxPermits, 1) {
-		ratelimiter.storedPermits = 0.0
+		limiter.storedPermits = 0.0
 	} else {
 		if oldMaxPermits == 0.0 {
-			ratelimiter.storedPermits = ratelimiter.maxPermits
+			limiter.storedPermits = limiter.maxPermits
 		} else {
-			ratelimiter.storedPermits = ratelimiter.storedPermits * ratelimiter.maxPermits / oldMaxPermits
+			limiter.storedPermits = limiter.storedPermits * limiter.maxPermits / oldMaxPermits
 		}
 	}
 }
 
-func (ratelimiter *SmoothWarmingUp) storedPermitsToWaitTime(storedPermits float64, permitsToTake float64) time.Duration {
-	availablePermitsAboveThreshold := storedPermits - ratelimiter.thresholdPermits
+func (limiter *SmoothWarmingUp) storedPermitsToWaitTime(storedPermits float64, permitsToTake float64) time.Duration {
+	availablePermitsAboveThreshold := storedPermits - limiter.thresholdPermits
 	var t time.Duration = 0
 	if availablePermitsAboveThreshold > 0.0 {
 		permitsAboveThresholdToTake := math.Min(availablePermitsAboveThreshold, permitsToTake)
 		length :=
-			ratelimiter.permitsToTime(availablePermitsAboveThreshold) + ratelimiter.permitsToTime(availablePermitsAboveThreshold-permitsAboveThresholdToTake)
+			limiter.permitsToTime(availablePermitsAboveThreshold) + limiter.permitsToTime(availablePermitsAboveThreshold-permitsAboveThresholdToTake)
 		t = time.Duration(permitsAboveThresholdToTake * float64(length) / 2.0)
 		permitsToTake -= permitsAboveThresholdToTake
 	}
-	t += ratelimiter.stableIntervalTime * time.Duration(permitsToTake)
+	t += limiter.stableIntervalTime * time.Duration(permitsToTake)
 	return t
 }
 
-func (ratelimiter *SmoothWarmingUp) permitsToTime(permits float64) time.Duration {
-	return ratelimiter.stableIntervalTime + time.Duration(permits*ratelimiter.slope)
+func (limiter *SmoothWarmingUp) permitsToTime(permits float64) time.Duration {
+	return limiter.stableIntervalTime + time.Duration(permits*limiter.slope)
 }
 
-func (ratelimiter *SmoothWarmingUp) coolDownIntervalTime() float64 {
-	return float64(ratelimiter.warmupPeriodTime) / ratelimiter.maxPermits
+func (limiter *SmoothWarmingUp) coolDownIntervalTime() float64 {
+	return float64(limiter.warmupPeriodTime) / limiter.maxPermits
 }
 
-func (ratelimiter *SmoothWarmingUp) saturatedAdd(a time.Duration, b time.Duration) time.Duration {
+func (limiter *SmoothWarmingUp) saturatedAdd(a time.Duration, b time.Duration) time.Duration {
 	naiveSum := a + b
 	if (a^b) < 0 || (a^naiveSum) >= 0 {
 		// If a and b have different signs or a has the same sign as the result then there was no
@@ -140,15 +126,15 @@ func (ratelimiter *SmoothWarmingUp) saturatedAdd(a time.Duration, b time.Duratio
 	return math.MaxInt64 + (((naiveSum & (math.MaxInt64 >> 1)) >> (64 - 1)) ^ 1)
 }
 
-func (ratelimiter *SmoothWarmingUp) reserveEarliestAvailable(requiredPermits int, nowTime time.Duration) time.Duration {
-	ratelimiter.resync(nowTime)
-	returnValue := ratelimiter.nextFreeTicketTime
-	storedPermitsToSpend := math.Min(float64(requiredPermits), ratelimiter.storedPermits)
+func (limiter *SmoothWarmingUp) reserveEarliestAvailable(requiredPermits int, nowTime time.Duration) time.Duration {
+	limiter.resync(nowTime)
+	returnValue := limiter.nextFreeTicketTime
+	storedPermitsToSpend := math.Min(float64(requiredPermits), limiter.storedPermits)
 	freshPermits := float64(requiredPermits) - storedPermitsToSpend
 	waitTime :=
-		ratelimiter.storedPermitsToWaitTime(ratelimiter.storedPermits, storedPermitsToSpend) + time.Duration(freshPermits*float64(ratelimiter.stableIntervalTime))
+		limiter.storedPermitsToWaitTime(limiter.storedPermits, storedPermitsToSpend) + time.Duration(freshPermits*float64(limiter.stableIntervalTime))
 
-	ratelimiter.nextFreeTicketTime = ratelimiter.saturatedAdd(ratelimiter.nextFreeTicketTime, waitTime)
-	ratelimiter.storedPermits -= storedPermitsToSpend
+	limiter.nextFreeTicketTime = limiter.saturatedAdd(limiter.nextFreeTicketTime, waitTime)
+	limiter.storedPermits -= storedPermitsToSpend
 	return returnValue
 }
