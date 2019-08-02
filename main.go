@@ -3,52 +3,46 @@ package main
 import (
 	"fmt"
 	"log"
+	_ "net/http/pprof"
 	"ratelimit/src/ratelimiter"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
-var mutex sync.Mutex
-var count int64
-
 func main() {
-	var err error
-	r, err := ratelimiter.NewSmoothWarmingUp(500000, time.Second*3, 3.0)
-	if err != nil {
-		log.Println(err.Error())
-		return
-	}
-	go ticket()
-	for i := 1; i <= 200; i++ {
-		go acquire(r)
-	}
-	select {}
-}
+	var success int64 = 0
+	var fail int64 = 0
+	var freq = 100000.0
 
-func acquire(r *ratelimiter.SmoothWarmingUp) {
-	for {
-		_, err := r.Acquire(1)
-		if err != nil {
-			log.Println(err.Error())
-			return
-		}
-		mutex.Lock()
-		count++
-		mutex.Unlock()
+	rtlimiter, _ := ratelimiter.NewSmoothWarmingUp(freq, time.Second*3, 3.0)
+	log.Println(fmt.Sprintf("start"))
+	for i := 0; i < 100; i++ {
+		go func() {
+			for {
+				// get,_:=rtlimiter.TryAcquire(1)
+				// if get {
+				// 	atomic.AddInt64(&success,1)
+				// }else{
+				// 	atomic.AddInt64(&fail,1)
+				// }
+				rtlimiter.Acquire(1)
+				//log.Println(fmt.Sprintf("sleep %f s",t))
+				atomic.AddInt64(&success, 1)
+			}
+		}()
 	}
-}
-
-func ticket() {
-	d := time.Duration(time.Second)
-
-	t := time.NewTicker(d)
+	t := time.NewTicker(time.Second)
 	defer t.Stop()
-	count = 0
 	for {
-		<-t.C
-		mutex.Lock()
-		log.Println(fmt.Sprintf("get %d", count))
-		count = 0
-		mutex.Unlock()
+		select {
+		case <-t.C:
+			log.Println(fmt.Sprintf("success %d s", success))
+			log.Println(fmt.Sprintf("fail %d s", fail))
+			atomic.StoreInt64(&success, 0)
+			atomic.StoreInt64(&fail, 0)
+
+			log.Println("next")
+		}
 	}
+
 }

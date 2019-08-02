@@ -77,14 +77,14 @@ func (limiter *BaseLimiter) TryAcquire(permits int, timeout time.Duration) (bool
 	}
 	var timeToWait time.Duration
 	limiter.mutex.Lock()
-	defer limiter.mutex.Unlock()
-
-	nowMicros := limiter.stopwatch.Elapsed()
-	if !limiter.canAcquire(nowMicros, timeout) {
+	nowTime := limiter.stopwatch.Elapsed()
+	if !limiter.canAcquire(nowTime, timeout) {
+		defer limiter.mutex.Unlock()
 		return false, nil
 	} else {
-		timeToWait = limiter.reserveAndGetWaitLength(permits, nowMicros)
+		timeToWait = limiter.reserveAndGetWaitLength(permits, nowTime)
 	}
+	defer limiter.mutex.Unlock()
 	limiter.stopwatch.ticker.sleep(timeToWait)
 	return true, nil
 }
