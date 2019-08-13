@@ -67,7 +67,8 @@ func (rl *SlidingWindowLimiter)Acquire(permits int) (error) {
 	defer rl.mux.RUnlock()
 	thresholdValue:=getSlideSlotCount(newTime,rl.prevSlotCount,rl.curSlotCount)
 	if rl.permitPerSec > thresholdValue {
-		if getSlideSlotCount(newTime,rl.prevSlotCount,atomic.AddInt64(&rl.curSlotCount,1)) > rl.permitPerSec{
+		windowCount:=getSlideSlotCount(newTime,rl.prevSlotCount,atomic.AddInt64(&rl.curSlotCount,1))
+		if windowCount > rl.permitPerSec  || rl.curSlotCount > rl.permitPerSec{
 			atomic.AddInt64(&rl.curSlotCount,-1)
 			return errors.New("rate limit 1")
 		}else{
