@@ -33,7 +33,8 @@ refer to guava [SmoothRateLimiter](https://github.com/google/guava/blob/master/g
 based on sliding window
 
 refer to [Kong](https://konghq.com/blog/how-to-design-a-scalable-rate-limiting-algorithm/)
-##example
+
+## example
 
 ### SmoothRateLimiter
 ```go
