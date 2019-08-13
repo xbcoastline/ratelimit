@@ -8,22 +8,31 @@ import (
 )
 
 func main() {
-	rl, _ := ratelimiter.NewSlidingLimiter(100000)
-	tick := time.Tick(time.Second)
-	sum:=int64(0)
-	for j := 0; j < 10; j++ {
-		for {
-			select {
-			case <-tick:
-				fmt.Printf("get %d token\n",sum)
-				sum=0
-				break
-			default:
-				if err := rl.Acquire(1); err == nil {
-					atomic.AddInt64(&sum,1)
+	ticketNum := 1
+	rlArray := make([]*ratelimiter.SmoothRateLimiter, ticketNum)
+	tickArr := make([]<-chan time.Time, ticketNum)
+	sum := make([]int64, ticketNum)
+	permitSec := int64(10)
+
+	for j := 0; j < ticketNum; j++ {
+		rlArray[j], _ = ratelimiter.NewSmoothWarmingUpLimiter(float64(permitSec), time.Second*3, 3.0)
+		sum[j] = 0
+		tickArr[j] = time.Tick(time.Second)
+		go func(rl *ratelimiter.SmoothRateLimiter, tick <-chan time.Time, sum *int64) {
+			for {
+				select {
+				case <-tick:
+					fmt.Printf("get %d token\n", sum)
+					*sum = 0
+					break
+				default:
+					if get, _ := rl.TryAcquire(1, time.Microsecond); get == true {
+						atomic.AddInt64(sum, 1)
+					}
 				}
+				time.Sleep(time.Microsecond)
 			}
-		}
-		time.Sleep(time.Millisecond)
+		}(rlArray[j], tickArr[j], &sum[j])
 	}
+	select {}
 }

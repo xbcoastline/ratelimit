@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-type SmoothWarmingUp struct {
+type SmoothRateLimiter struct {
 	warmupPeriodTime time.Duration
 	slope            float64
 	thresholdPermits float64
@@ -31,11 +31,11 @@ func checkArgument(b bool, errorMessageTemplate string) error {
 	}
 }
 
-func NewSmoothWarmingUp(permitsPerSecond float64, warmupPeriod time.Duration, coldFactor float64) (*SmoothWarmingUp, error) {
+func NewSmoothWarmingUpLimiter(permitsPerSecond float64, warmupPeriod time.Duration, coldFactor float64) (*SmoothRateLimiter, error) {
 	if err := checkArgument(warmupPeriod >= 0, fmt.Sprintf("warmupPeriod must not be negative: %d", warmupPeriod)); err != nil {
 		return nil, err
 	}
-	ratelimiter := SmoothWarmingUp{
+	ratelimiter := SmoothRateLimiter{
 		warmupPeriodTime:   warmupPeriod,
 		coldFactor:         coldFactor,
 		nextFreeTicketTime: 0,
@@ -54,15 +54,15 @@ func NewSmoothWarmingUp(permitsPerSecond float64, warmupPeriod time.Duration, co
 	return &ratelimiter, nil
 }
 
-func (limiter *SmoothWarmingUp) queryEarliestAvailable(nowTime time.Duration) time.Duration {
+func (limiter *SmoothRateLimiter) queryEarliestAvailable(nowTime time.Duration) time.Duration {
 	return limiter.nextFreeTicketTime
 }
 
-func (limiter *SmoothWarmingUp) doGetRate() float64 {
+func (limiter *SmoothRateLimiter) doGetRate() float64 {
 	return float64(time.Second) / float64(limiter.stableIntervalTime)
 }
 
-func (limiter *SmoothWarmingUp) resync(nowTime time.Duration) {
+func (limiter *SmoothRateLimiter) resync(nowTime time.Duration) {
 	// if nextFreeTicket is in the past, resync to now
 	if nowTime > limiter.nextFreeTicketTime {
 		newPermits := float64(nowTime-limiter.nextFreeTicketTime) / limiter.coolDownIntervalTime()
@@ -71,7 +71,7 @@ func (limiter *SmoothWarmingUp) resync(nowTime time.Duration) {
 	}
 }
 
-func (limiter *SmoothWarmingUp) doSetRate(permitsPerSecond float64, nowTime time.Duration) {
+func (limiter *SmoothRateLimiter) doSetRate(permitsPerSecond float64, nowTime time.Duration) {
 	limiter.resync(nowTime)
 	stableIntervalTime := time.Duration(float64(time.Second) / permitsPerSecond)
 	limiter.stableIntervalTime = stableIntervalTime
@@ -93,7 +93,7 @@ func (limiter *SmoothWarmingUp) doSetRate(permitsPerSecond float64, nowTime time
 	}
 }
 
-func (limiter *SmoothWarmingUp) storedPermitsToWaitTime(storedPermits float64, permitsToTake float64) time.Duration {
+func (limiter *SmoothRateLimiter) storedPermitsToWaitTime(storedPermits float64, permitsToTake float64) time.Duration {
 	availablePermitsAboveThreshold := storedPermits - limiter.thresholdPermits
 	var t time.Duration = 0
 	if availablePermitsAboveThreshold > 0.0 {
@@ -107,15 +107,15 @@ func (limiter *SmoothWarmingUp) storedPermitsToWaitTime(storedPermits float64, p
 	return t
 }
 
-func (limiter *SmoothWarmingUp) permitsToTime(permits float64) time.Duration {
+func (limiter *SmoothRateLimiter) permitsToTime(permits float64) time.Duration {
 	return limiter.stableIntervalTime + time.Duration(permits*limiter.slope)
 }
 
-func (limiter *SmoothWarmingUp) coolDownIntervalTime() float64 {
+func (limiter *SmoothRateLimiter) coolDownIntervalTime() float64 {
 	return float64(limiter.warmupPeriodTime) / limiter.maxPermits
 }
 
-func (limiter *SmoothWarmingUp) saturatedAdd(a time.Duration, b time.Duration) time.Duration {
+func (limiter *SmoothRateLimiter) saturatedAdd(a time.Duration, b time.Duration) time.Duration {
 	naiveSum := a + b
 	if (a^b) < 0 || (a^naiveSum) >= 0 {
 		// If a and b have different signs or a has the same sign as the result then there was no
@@ -126,7 +126,7 @@ func (limiter *SmoothWarmingUp) saturatedAdd(a time.Duration, b time.Duration) t
 	return math.MaxInt64 + (((naiveSum & (math.MaxInt64 >> 1)) >> (64 - 1)) ^ 1)
 }
 
-func (limiter *SmoothWarmingUp) reserveEarliestAvailable(requiredPermits int, nowTime time.Duration) time.Duration {
+func (limiter *SmoothRateLimiter) reserveEarliestAvailable(requiredPermits int, nowTime time.Duration) time.Duration {
 	limiter.resync(nowTime)
 	returnValue := limiter.nextFreeTicketTime
 	storedPermitsToSpend := math.Min(float64(requiredPermits), limiter.storedPermits)
